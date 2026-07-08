@@ -33,6 +33,8 @@ def get_argument_parser():
     parser.add_argument('--MaxEpoch', default=40, type=int,
                         help='Number of training epochs.')
     parser.add_argument('--MineEpoch', default=25, type=int)
+    parser.add_argument('--memory_update_interval', default=5, type=int,
+                        help='Number of mining-stage epochs between memory bank refreshes.')
     parser.add_argument('--UpdateEpoch', default=35, type=int)
                                       
     parser.add_argument('--lr_update', default=15, type=int,

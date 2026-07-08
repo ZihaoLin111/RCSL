@@ -507,10 +507,17 @@ if __name__ == '__main__':
         if epoch == opt.MineEpoch: 
             model.reinit_optimizer()  #keep
             
-        if epoch >= opt.MineEpoch: 
-            logger.info(f"Start mining") 
-            memory_bank = UpdateMemoryBank(train_loader, model)
-            model.memory_bank = memory_bank
+        if epoch >= opt.MineEpoch:
+            memory_update_interval = max(1, opt.memory_update_interval)
+            mining_epoch = epoch - opt.MineEpoch
+            mining_round = mining_epoch // memory_update_interval
+            should_update_memory = model.memory_bank is None or mining_epoch % memory_update_interval == 0
+            if should_update_memory:
+                logger.info(f"Start mining memory update round {mining_round}")
+                memory_bank = UpdateMemoryBank(train_loader, model, time_u=mining_round)
+                model.memory_bank = memory_bank
+            else:
+                logger.info(f"Reuse mining memory bank round {mining_round}")
             train_loader.dataset.memory_bank = model.memory_bank
 
 
