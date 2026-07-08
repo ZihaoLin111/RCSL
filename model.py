@@ -199,13 +199,23 @@ class SVSE(nn.Module):
         cap_embs = self.txt_enc(captions, caption_lengths)
         return cap_embs
     
-    def robust_mining_loss(self, scores, tau = 0.02):
+    def robust_mining_loss(self, scores, tau = 0.02, weights=None):
+        if weights is not None:
+            weights = weights.to(scores.device).float()
+            keep = weights > 0
+            if keep.sum().data.item() == 0:
+                return scores.sum() * 0
+            scores = scores[keep][:, keep]
+            weights = weights[keep]
 
         p1 = F.softmax(scores/tau, dim=1)
         p2 = F.softmax(scores.t()/tau, dim=1)
 
         loss1 =   (1- p1.diag()) 
         loss2 =   (1- p2.diag())
+        if weights is not None:
+            loss1 = loss1 * weights
+            loss2 = loss2 * weights
         loss = loss1.sum() + loss2.sum()
         return loss/2
 
@@ -255,9 +265,19 @@ class SVSE(nn.Module):
             
             sims1 = p_up_img @ cap_embs_dict[0].t()
             sims2 = p_up_txt @ img_embs_dict[0].t() 
+
+            weights_img = torch.ones(len(cap_ids)).to(sims1.device)
+            weights_txt = torch.ones(len(img_ids)).to(sims2.device)
+            if self.memory_bank is not None and self.memory_bank['hard_i2t'].shape[1] >= 3:
+                hard_t2i = self.memory_bank['hard_t2i']
+                hard_i2t = self.memory_bank['hard_i2t']
+                for i in range(paired_l, len(cap_ids)):
+                    weights_img[i] = hard_t2i[int(cap_ids[i])][2]
+                for i in range(paired_l, len(img_ids)):
+                    weights_txt[i] = hard_i2t[int(img_ids[i])][2]
      
-            loss2 += self.robust_mining_loss(sims1,  tau=tau) 
-            loss2 += self.robust_mining_loss(sims2,  tau=tau)
+            loss2 += self.robust_mining_loss(sims1,  tau=tau, weights=weights_img) 
+            loss2 += self.robust_mining_loss(sims2,  tau=tau, weights=weights_txt)
         
         loss = loss1 + loss2 + loss3
 

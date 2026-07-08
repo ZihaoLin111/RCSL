@@ -278,11 +278,14 @@ def com(memory_bank,th=0.5,shuffle_inx=None):
 
 
 def UpdateMemoryBank(data_loader, model, time_u=0):
+    logger = logging.getLogger(__name__)
     memory_bank_path = model.opt.logger_path+f'/memory_bank_{time_u}.npy'
     # memory_bank_path ='/home/qinyang/windows/sda1/ProjectsOfQy/EvidenceTextImage/SemiVSE/mb/memory_bank.npy'
     if os.path.exists(memory_bank_path):
         memory_bank = np.load(memory_bank_path, allow_pickle= True).item()
-        return memory_bank
+        if memory_bank['hard_i2t'].shape[1] >= 3 and memory_bank['hard_t2i'].shape[1] >= 3:
+            return memory_bank
+        logger.info("=> existing memory bank has no MNN accept flags, recomputing")
 
     if 'f30k' in data_loader.dataset.opt.data_name:
         bs = 1000
@@ -292,13 +295,13 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
     model.val_start()
     if time_u == 0:
         memory_bank = {
-            'hard_i2t': torch.zeros((data_loader.dataset.img_length , 2)).cuda(), # index sims_i2t
-            'hard_t2i': torch.zeros((data_loader.dataset.old_length , 2)).cuda() # index sims_t2i
+            'hard_i2t': torch.zeros((data_loader.dataset.img_length , 3)).cuda(), # index sims_i2t accepted
+            'hard_t2i': torch.zeros((data_loader.dataset.old_length , 3)).cuda() # index sims_t2i accepted
         }
     else:
         memory_bank = {
-            'hard_i2t': torch.Tensor(model.memory_bank['hard_i2t']).cuda(), # index sims_i2t
-            'hard_t2i': torch.Tensor(model.memory_bank['hard_t2i']).cuda() # index sims_t2i
+            'hard_i2t': torch.Tensor(model.memory_bank['hard_i2t']).cuda(), # index sims_i2t accepted
+            'hard_t2i': torch.Tensor(model.memory_bank['hard_t2i']).cuda() # index sims_t2i accepted
         }
     print("compute embs")
     img_set =  data.Img_dataset(data_loader.dataset.images)
@@ -343,6 +346,9 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
     i_label = i_label.cuda()
     t_label = t_label.cuda()
 
+    best_i2t = torch.zeros((data_loader.dataset.img_length, 2)).cuda()
+    best_t2i = torch.zeros((data_loader.dataset.old_length, 2)).cuda()
+
 
     print("i2t correlation")
     n_i = (img_embs.shape[0]-1) // bs +1
@@ -357,11 +363,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
      
         max = sims.max(dim=1)
         for j in range(i * bs, end):
-            if i_label[j].data.item() == 1:
-                if max[0][j-i * bs].data.item() > memory_bank['hard_i2t'][j][1] or time_u == 0:
-                    memory_bank['hard_i2t'][j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
-            else:
-                memory_bank['hard_i2t'][j] = torch.Tensor(np.array([j*5, 1])).cuda() # else paired
+            best_i2t[j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
         del sims
     print("t2i correlation")
     for i in range(n_t):
@@ -373,12 +375,43 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         # sims = (torch.Tensor(cap_embs[i * bs: end]).cuda()).mm( torch.Tensor(img_embs).cuda().t())
         max = sims.max(dim=1)
         for j in range(i * bs, end):
-            if t_label[j].data.item() == 1:
-                if max[0][j - i*bs].data.item() > memory_bank['hard_t2i'][j][1] or time_u == 0:
-                    memory_bank['hard_t2i'][j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
-            else:
-                memory_bank['hard_t2i'][j] = torch.Tensor(np.array([j//5, 1])).cuda() # else paired
+            best_t2i[j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
         del sims
+
+    accepted_i2t = 0
+    mined_i2t = 0
+    for j in range(data_loader.dataset.img_length):
+        if i_label[j].data.item() == 1:
+            mined_i2t += 1
+            cap_id = int(best_i2t[j][0].data.item())
+            is_mutual = t_label[cap_id].data.item() == 1 and int(best_t2i[cap_id][0].data.item()) == j
+            accepted_i2t += int(is_mutual)
+            memory_bank['hard_i2t'][j] = torch.Tensor(np.array([
+                cap_id,
+                best_i2t[j][1].data.item(),
+                1 if is_mutual else 0
+            ])).cuda()
+        else:
+            memory_bank['hard_i2t'][j] = torch.Tensor(np.array([j*5, 1, 1])).cuda()
+
+    accepted_t2i = 0
+    mined_t2i = 0
+    for j in range(data_loader.dataset.old_length):
+        if t_label[j].data.item() == 1:
+            mined_t2i += 1
+            img_id = int(best_t2i[j][0].data.item())
+            is_mutual = i_label[img_id].data.item() == 1 and int(best_i2t[img_id][0].data.item()) == j
+            accepted_t2i += int(is_mutual)
+            memory_bank['hard_t2i'][j] = torch.Tensor(np.array([
+                img_id,
+                best_t2i[j][1].data.item(),
+                1 if is_mutual else 0
+            ])).cuda()
+        else:
+            memory_bank['hard_t2i'][j] = torch.Tensor(np.array([j//5, 1, 1])).cuda()
+
+    logger.info(f"MNN i2t accepted: {accepted_i2t}/{mined_i2t}")
+    logger.info(f"MNN t2i accepted: {accepted_t2i}/{mined_t2i}")
     memory_bank['hard_i2t'] = memory_bank['hard_i2t'].detach().cpu().numpy()
     memory_bank['hard_t2i'] = memory_bank['hard_t2i'].detach().cpu().numpy()
     
@@ -525,4 +558,3 @@ if __name__ == '__main__':
         test_loader = data.get_test_loader('test', opt.data_name, vocab_or_tokenizer, 128, opt.workers,
                                            opt)
         evalrank(test_loader, model, fold5=False, logger =logger)
-
