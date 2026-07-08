@@ -280,7 +280,6 @@ def com(memory_bank,th=0.5,shuffle_inx=None):
 def UpdateMemoryBank(data_loader, model, time_u=0):
     logger = logging.getLogger(__name__)
     memory_bank_path = model.opt.logger_path+f'/memory_bank_{time_u}.npy'
-    # memory_bank_path ='/home/qinyang/windows/sda1/ProjectsOfQy/EvidenceTextImage/SemiVSE/mb/memory_bank.npy'
     if os.path.exists(memory_bank_path):
         memory_bank = np.load(memory_bank_path, allow_pickle= True).item()
         if memory_bank['hard_i2t'].shape[1] >= 3 and memory_bank['hard_t2i'].shape[1] >= 3:

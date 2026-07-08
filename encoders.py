@@ -144,7 +144,8 @@ def get_text_encoder(opt,word2idx):
  
     return EncoderText_gru(opt.vocab_size, opt.embed_size, opt.word_dim, opt.num_layers,
                                 use_bi_gru=opt.use_bi_gru,
-                                no_txtnorm=opt.no_txtnorm,word2idx=word2idx)
+                                no_txtnorm=opt.no_txtnorm,word2idx=word2idx,
+                                glove_cache_path=getattr(opt, 'glove_cache_path', './vocab/vector_cache'))
 
 
 def get_image_encoder(opt):
@@ -215,10 +216,12 @@ class EncoderImageAggr(nn.Module):
 
 
 class EncoderText_gru(nn.Module):
-    def __init__(self, vocab_size, embed_size, word_dim, num_layers, use_bi_gru=True, no_txtnorm=False,word2idx=None):
+    def __init__(self, vocab_size, embed_size, word_dim, num_layers, use_bi_gru=True, no_txtnorm=False,word2idx=None,
+                 glove_cache_path='./vocab/vector_cache'):
         super(EncoderText_gru, self).__init__()
         self.embed_size = embed_size
         self.no_txtnorm = no_txtnorm
+        self.glove_cache_path = glove_cache_path
         # word embedding
         self.embed = nn.Embedding(vocab_size, word_dim)
         # caption embedding 
@@ -233,7 +236,7 @@ class EncoderText_gru(nn.Module):
         if word2idx is None:
             self.embed.weight.data.uniform_(-0.1, 0.1)
         else:
-            path = os.path.join('/sde1/qinyang/projects/Cross-modal/TCL/vocab', 'vector_cache')
+            path = self.glove_cache_path
             print(path)
             wemb = torchtext.vocab.GloVe(cache=path)
 

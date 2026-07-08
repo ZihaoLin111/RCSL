@@ -25,10 +25,12 @@ def get_argument_parser():
                         help='Path to save the model.')
     parser.add_argument('--data_name', default='f30k_precomp',
                         help='{coco,f30k}_precomp')
-    parser.add_argument('--data_path', default='/home/qinyang/projects/data/cross_modal_data/data/data',
+    parser.add_argument('--data_path', default='./data',
                         help='path to datasets')
-    parser.add_argument('--vocab_path', default='/home/qinyang/projects/data/cross_modal_data/data/vocab',
+    parser.add_argument('--vocab_path', default='./vocab',
                         help='Path to saved vocabulary json files.')
+    parser.add_argument('--glove_cache_path', default='./vocab/vector_cache',
+                        help='Path to cached GloVe vectors.')
 
     parser.add_argument('--MaxEpoch', default=40, type=int,
                         help='Number of training epochs.')

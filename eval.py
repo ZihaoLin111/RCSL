@@ -12,21 +12,26 @@ warnings.filterwarnings("ignore")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path', default='/home_bak/hupeng/data/data',
+    parser.add_argument('--data_path', default='./data',
                         help='path to datasets')
-    parser.add_argument('--data_name', default='coco_precomp',
+    parser.add_argument('--data_name', default=None,
                         help='{coco,f30k}_precomp')
-    parser.add_argument('--vocab_path', default='/home_bak/hupeng/data/vocab',
+    parser.add_argument('--vocab_path', default='./vocab',
                         help='Path to saved vocabulary json files.')
-    parser.add_argument('--model_path', default='/home/qinyang/projects/Text2ImagepPerson/SVSE/runsx_ESA_cts/coco_beta_ag_times2_glove_sr0.90_logMax_bs256_full_tau10.02_tau20.03/checkpoint/model_mining_best.pth.tar',
+    parser.add_argument('--model_path', default='./runs/test/checkpoint/model_mining_best.pth.tar',
                         help='Path to saved model.')       
 
 
-    opt = parser.parse_args()
+    eval_opt = parser.parse_args()
     logger = logging.getLogger(__name__)
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
-    checkpoint = torch.load(opt.model_path)
+    checkpoint = torch.load(eval_opt.model_path)
     opt = checkpoint['opt']
+    opt.data_path = eval_opt.data_path
+    if eval_opt.data_name is not None:
+        opt.data_name = eval_opt.data_name
+    opt.vocab_path = eval_opt.vocab_path
+    opt.model_path = eval_opt.model_path
     logger.info(opt)
     logger.info(f"Load model: {opt.model_path}")
     logger.info(f"Best epoch: {checkpoint['epoch']}")

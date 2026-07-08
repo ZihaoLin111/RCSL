@@ -224,7 +224,6 @@ def evalrank(data_loader, model, fold5=False, logger=None):
      
         sims = cosine_similarity_matrix(img_embs, cap_embs)
         npts = img_embs.shape[0]
-        # np.save("/home/qinyang/windows/sda1/ProjectsOfQy/EvidenceTextImage/SemiVSE/mb/spl_ccm_sims.npy",sims)
         r, rt = i2t(npts, sims, return_ranks=True)
         ri, rti = t2i(npts, sims, return_ranks=True)
         ar = (r[0] + r[1] + r[2]) / 3
