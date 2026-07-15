@@ -268,13 +268,16 @@ class SVSE(nn.Module):
 
             weights_img = torch.ones(len(cap_ids)).to(sims1.device)
             weights_txt = torch.ones(len(img_ids)).to(sims2.device)
-            if self.memory_bank is not None and self.memory_bank['hard_i2t'].shape[1] >= 3:
-                hard_t2i = self.memory_bank['hard_t2i']
-                hard_i2t = self.memory_bank['hard_i2t']
-                for i in range(paired_l, len(cap_ids)):
-                    weights_img[i] = hard_t2i[int(cap_ids[i])][2]
-                for i in range(paired_l, len(img_ids)):
-                    weights_txt[i] = hard_i2t[int(img_ids[i])][2]
+            if self.memory_bank is not None and self.memory_bank['hard_i2t'].shape[1] >= 3 and self.memory_bank['hard_t2i'].shape[1] >= 3:
+                hard_t2i = torch.as_tensor(self.memory_bank['hard_t2i'], device=sims1.device, dtype=weights_img.dtype)
+                hard_i2t = torch.as_tensor(self.memory_bank['hard_i2t'], device=sims2.device, dtype=weights_txt.dtype)
+
+                cap_indices = torch.as_tensor(cap_ids[paired_l:], device=sims1.device, dtype=torch.long)
+                img_indices = torch.as_tensor(img_ids[paired_l:], device=sims2.device, dtype=torch.long)
+                if cap_indices.numel() > 0:
+                    weights_img[paired_l:] = hard_t2i[cap_indices, 2]
+                if img_indices.numel() > 0:
+                    weights_txt[paired_l:] = hard_i2t[img_indices, 2]
      
             loss2 += self.robust_mining_loss(sims1,  tau=tau, weights=weights_img) 
             loss2 += self.robust_mining_loss(sims2,  tau=tau, weights=weights_txt)
