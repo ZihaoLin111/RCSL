@@ -1,0 +1,16 @@
+[project]
+name = "rcsl"
+version = "0.1.0"
+description = "Robust Semi-paired Multimodal Learning for Cross-modal Retrieval"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "nltk>=3.10.0",
+    "numpy>=1.26.4",
+    "scikit-learn>=1.7.2",
+    "torch>=2.1.2",
+    "transformers>=4.40.2",
+    "wandb>=0.16",
+]
+
+[tool.uv]
+package = false
