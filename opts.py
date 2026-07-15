@@ -31,6 +31,8 @@ def get_argument_parser():
                         help='Path to saved vocabulary json files.')
     parser.add_argument('--glove_cache_path', default='./vocab/vector_cache',
                         help='Path to cached GloVe vectors.')
+    parser.add_argument('--glove_name', default='840B',
+                        help='GloVe corpus name, e.g. 840B or 6B.')
 
     parser.add_argument('--MaxEpoch', default=40, type=int,
                         help='Number of training epochs.')

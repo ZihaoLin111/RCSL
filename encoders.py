@@ -1,5 +1,6 @@
 import math
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -7,9 +8,83 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import logging
-import torchtext
 
 logger = logging.getLogger(__name__)
+
+
+_GLOVE_CACHE = {}
+
+
+def _load_torch_file(path):
+    try:
+        return torch.load(path, map_location='cpu', weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location='cpu')
+
+
+def _load_glove_pt(path, expected_dim):
+    obj = _load_torch_file(path)
+
+    if isinstance(obj, tuple) and len(obj) >= 4:
+        _, stoi, vectors, dim = obj[:4]
+    elif isinstance(obj, dict):
+        stoi = obj.get('stoi')
+        vectors = obj.get('vectors')
+        dim = obj.get('dim', vectors.shape[1] if vectors is not None and vectors.ndim == 2 else None)
+    else:
+        raise ValueError(f'Unsupported cached GloVe format in {path}')
+
+    if stoi is None or vectors is None:
+        raise ValueError(f'Cached GloVe file {path} does not contain stoi/vectors')
+    if int(dim) != expected_dim or vectors.shape[1] != expected_dim:
+        raise ValueError(f'GloVe cache {path} has dim={dim}, expected {expected_dim}')
+
+    return SimpleNamespace(stoi=stoi, vectors=vectors.float())
+
+
+def load_glove_embeddings(glove_dir, name='840B', dim=300):
+    glove_path = os.path.join(glove_dir, f'glove.{name}.{dim}d.txt')
+    glove_pt_path = f'{glove_path}.pt'
+    if os.path.isfile(glove_pt_path):
+        glove_path = glove_pt_path
+    if glove_path in _GLOVE_CACHE:
+        return _GLOVE_CACHE[glove_path]
+
+    if not os.path.isfile(glove_path):
+        raise FileNotFoundError(
+            f'Cannot find GloVe file at {glove_path}. '
+            f'Place glove.{name}.{dim}d.txt or glove.{name}.{dim}d.txt.pt in the cache directory, '
+            'or adjust glove_cache_path/glove_name.'
+        )
+
+    if glove_path.endswith('.pt'):
+        embeddings = _load_glove_pt(glove_path, dim)
+        _GLOVE_CACHE[glove_path] = embeddings
+        return embeddings
+
+    stoi = {}
+    vectors = []
+    with open(glove_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            parts = line.rstrip().split()
+            if len(parts) <= 2:
+                continue
+            word = parts[0]
+            vector = np.asarray(parts[1:], dtype=np.float32)
+            if vector.shape[0] != dim:
+                continue
+            stoi[word] = len(vectors)
+            vectors.append(vector)
+
+    if not vectors:
+        raise ValueError(f'No embeddings were loaded from {glove_path}')
+
+    embeddings = SimpleNamespace(
+        stoi=stoi,
+        vectors=torch.from_numpy(np.stack(vectors, axis=0)),
+    )
+    _GLOVE_CACHE[glove_path] = embeddings
+    return embeddings
 
 
 def l2norm(X, dim, eps=1e-8):
@@ -145,7 +220,8 @@ def get_text_encoder(opt,word2idx):
     return EncoderText_gru(opt.vocab_size, opt.embed_size, opt.word_dim, opt.num_layers,
                                 use_bi_gru=opt.use_bi_gru,
                                 no_txtnorm=opt.no_txtnorm,word2idx=word2idx,
-                                glove_cache_path=getattr(opt, 'glove_cache_path', './vocab/vector_cache'))
+                                glove_cache_path=getattr(opt, 'glove_cache_path', './vocab/vector_cache'),
+                                glove_name=getattr(opt, 'glove_name', '840B'))
 
 
 def get_image_encoder(opt):
@@ -217,11 +293,13 @@ class EncoderImageAggr(nn.Module):
 
 class EncoderText_gru(nn.Module):
     def __init__(self, vocab_size, embed_size, word_dim, num_layers, use_bi_gru=True, no_txtnorm=False,word2idx=None,
-                 glove_cache_path='./vocab/vector_cache'):
+                 glove_cache_path='./vocab/vector_cache', glove_name='840B'):
         super(EncoderText_gru, self).__init__()
         self.embed_size = embed_size
         self.no_txtnorm = no_txtnorm
         self.glove_cache_path = glove_cache_path
+        self.glove_name = glove_name
+        self.word_dim = word_dim
         # word embedding
         self.embed = nn.Embedding(vocab_size, word_dim)
         # caption embedding 
@@ -238,7 +316,7 @@ class EncoderText_gru(nn.Module):
         else:
             path = self.glove_cache_path
             print(path)
-            wemb = torchtext.vocab.GloVe(cache=path)
+            wemb = load_glove_embeddings(path, name=self.glove_name, dim=self.word_dim)
 
             # quick-and-dirty trick to improve word-hit rate
             missing_words = []
