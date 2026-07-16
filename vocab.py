@@ -131,18 +131,23 @@ def build_vocab(data_path, data_name, caption_file, threshold):
     return vocab
 
 
-def main(data_path, data_name):
+def main(data_path, data_name, vocab_path):
     vocab = build_vocab(data_path, data_name, caption_file=annotations, threshold=4)
-    serialize_vocab(vocab, './%s_vocab.json' % data_name)
-    print("Saved vocabulary file to ", './%s_vocab.json' % data_name)
+    if not os.path.isdir(vocab_path):
+        os.makedirs(vocab_path)
+    output_path = os.path.join(vocab_path, '%s_vocab.json' % data_name)
+    serialize_vocab(vocab, output_path)
+    print("Saved vocabulary file to ", output_path)
 
 
 from vocab import Vocabulary  # NOQA
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path', default='/data/RR/data')
+    parser.add_argument('--data_path', default='./data')
     parser.add_argument('--data_name', default='cc152k_precomp',
                         help='{coco,f30k,cc152k}_precomp')
+    parser.add_argument('--vocab_path', default='./vocab',
+                        help='Path to save vocabulary json files.')
     opt = parser.parse_args()
-    main(opt.data_path, opt.data_name)
+    main(opt.data_path, opt.data_name, opt.vocab_path)
