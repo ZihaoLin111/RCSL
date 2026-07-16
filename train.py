@@ -7,7 +7,7 @@ import torch
 
 import shutil
 import opts
-import tensorboard_logger as tb_logger
+import wandb
 
 import data
 from utils import save_config, cosine_similarity_matrix
@@ -17,6 +17,32 @@ from vocab import deserialize_vocab, deserialize_vocab_glove
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+class WandbLogger(object):
+    def __init__(self):
+        self.run = None
+
+    def configure(self, opt):
+        self.run = wandb.init(
+            project=os.environ.get('WANDB_PROJECT', 'RCSL'),
+            name=os.environ.get('WANDB_NAME'),
+            dir=opt.logger_path,
+            config=vars(opt),
+            resume='allow' if opt.resume else None,
+        )
+
+    def log_value(self, key, value, step=None):
+        wandb.log({key: value}, step=step)
+
+    def log_values(self, values, step=None):
+        wandb.log(values, step=step)
+
+    def finish(self):
+        wandb.finish()
+
+
+wandb_logger = WandbLogger()
 
 
 def adjust_learning_rate(model, epoch, lr_schedules):
@@ -201,12 +227,15 @@ def train(opt, train_loader, model, epoch, val_loader, best_rsum=0):
                                                                                   data_time=data_time,
                                                                                   e_log=str(model.logger)))
 
-        # Record logs in tensorboard
-        tb_logger.log_value('epoch', epoch, step=model.step)
-        tb_logger.log_value('step', i, step=model.step)
-        tb_logger.log_value('batch_time', batch_time.val, step=model.step)
-        tb_logger.log_value('data_time', data_time.val, step=model.step)
-        model.logger.tb_log(tb_logger, step=model.step)
+        # Record logs in wandb
+        wandb_metrics = {
+            'epoch': epoch,
+            'step': i,
+            'batch_time': batch_time.val,
+            'data_time': data_time.val,
+        }
+        wandb_metrics.update({k: v.val for k, v in model.logger.meters.items()})
+        wandb_logger.log_values(wandb_metrics, step=model.step)
 
 
 def validate(val_loader, model, mode='dev'):
@@ -229,31 +258,20 @@ def validate(val_loader, model, mode='dev'):
     currscore = r1 + r5 + r10 + r1i + r5i + r10i
     logger.info('rSum is {0}'.format(currscore))
  
-    # record metrics in tensorboard
-    if mode == 'test':
-        tb_logger.log_value('t-r1', r1, step=model.step)
-        tb_logger.log_value('t-r5', r5, step=model.step)
-        tb_logger.log_value('t-r10', r10, step=model.step)
-        tb_logger.log_value('t-medr', medr, step=model.step)
-        tb_logger.log_value('t-meanr', meanr, step=model.step)
-        tb_logger.log_value('t-r1i', r1i, step=model.step)
-        tb_logger.log_value('t-r5i', r5i, step=model.step)
-        tb_logger.log_value('t-r10i', r10i, step=model.step)
-        tb_logger.log_value('t-medri', medri, step=model.step)
-        tb_logger.log_value('t-meanr', meanr, step=model.step)
-        tb_logger.log_value('t-rsum', currscore, step=model.step)
-    else:
-        tb_logger.log_value('r1', r1, step=model.step)
-        tb_logger.log_value('r5', r5, step=model.step)
-        tb_logger.log_value('r10', r10, step=model.step)
-        tb_logger.log_value('medr', medr, step=model.step)
-        tb_logger.log_value('meanr', meanr, step=model.step)
-        tb_logger.log_value('r1i', r1i, step=model.step)
-        tb_logger.log_value('r5i', r5i, step=model.step)
-        tb_logger.log_value('r10i', r10i, step=model.step)
-        tb_logger.log_value('medri', medri, step=model.step)
-        tb_logger.log_value('meanr', meanr, step=model.step)
-        tb_logger.log_value('rsum', currscore, step=model.step)
+    # record metrics in wandb
+    prefix = 't-' if mode == 'test' else ''
+    wandb_logger.log_values({
+        prefix + 'r1': r1,
+        prefix + 'r5': r5,
+        prefix + 'r10': r10,
+        prefix + 'medr': medr,
+        prefix + 'meanr': meanr,
+        prefix + 'r1i': r1i,
+        prefix + 'r5i': r5i,
+        prefix + 'r10i': r10i,
+        prefix + 'medri': medri,
+        prefix + 'rsum': currscore,
+    }, step=model.step)
         
     return currscore
 def com(memory_bank,th=0.5,shuffle_inx=None):
@@ -399,7 +417,7 @@ if __name__ == '__main__':
     # Save config
     save_config(opt, os.path.join(opt.logger_path, "config.json"))
     # logger initialization
-    tb_logger.configure(opt.logger_path, flush_secs=5)
+    wandb_logger.configure(opt)
     logger = init_logging(opt.logger_path + '/log.txt')
     logger.info(f"===>PID:{os.getpid()}, GPU:[{opt.gpu}]")
     logger.info(opt)
@@ -524,3 +542,5 @@ if __name__ == '__main__':
         test_loader = data.get_test_loader('test', opt.data_name, vocab_or_tokenizer, 128, opt.workers,
                                            opt)
         evalrank(test_loader, model, fold5=False, logger =logger)
+
+    wandb_logger.finish()
