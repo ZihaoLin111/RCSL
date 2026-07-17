@@ -191,7 +191,7 @@ def UpdateMemoryBank_(data_loader, model, topK):
     memory_bank['hard_i2t'] = memory_bank['hard_i2t'].detach().cpu().numpy()
     memory_bank['hard_t2i'] = memory_bank['hard_t2i'].detach().cpu().numpy()
     
-    del i_label,t_label,img_set_loader,cap_set_loader,img_set,cap_set
+    del i_label,t_label,best_i2t,best_t2i,topk_i2t,topk_t2i,img_set_loader,cap_set_loader,img_set,cap_set
     torch.cuda.empty_cache()
     np.save(memory_bank_path, memory_bank)
     return memory_bank
@@ -425,14 +425,31 @@ def com(memory_bank,th=0.5,shuffle_inx=None):
     logger.info(f"t2i hard matched:  {count_}, {len_}, {count_/(len_+1)}")
 
 
+def get_scheduled_mnn_topk(opt, mining_round):
+    start = max(1, int(getattr(opt, 'mnn_topk_start', 10)))
+    end = max(1, int(getattr(opt, 'mnn_topk_end', start)))
+    decay_rounds = max(1, int(getattr(opt, 'mnn_topk_decay_rounds', 1)))
+    progress = min(max(mining_round, 0), decay_rounds) / decay_rounds
+    return max(1, int(round(start + (end - start) * progress)))
+
+
 def UpdateMemoryBank(data_loader, model, time_u=0):
     logger = logging.getLogger(__name__)
+    mnn_topk = get_scheduled_mnn_topk(model.opt, time_u)
+    expected_meta = {
+        'mnn_mode': 'top1_reverse_topk',
+        'mnn_topk': mnn_topk,
+    }
     memory_bank_path = model.opt.logger_path+f'/memory_bank_{time_u}.npy'
     if os.path.exists(memory_bank_path):
         memory_bank = np.load(memory_bank_path, allow_pickle= True).item()
-        if memory_bank['hard_i2t'].shape[1] >= 3 and memory_bank['hard_t2i'].shape[1] >= 3:
+        meta = memory_bank.get('meta', {})
+        if (memory_bank['hard_i2t'].shape[1] >= 3 and
+                memory_bank['hard_t2i'].shape[1] >= 3 and
+                meta.get('mnn_mode') == expected_meta['mnn_mode'] and
+                meta.get('mnn_topk') == expected_meta['mnn_topk']):
             return memory_bank
-        logger.info("=> existing memory bank has no MNN accept flags, recomputing")
+        logger.info("=> existing memory bank is incompatible with top-k MNN settings, recomputing")
 
     if 'f30k' in data_loader.dataset.opt.data_name:
         bs = 1000
@@ -493,8 +510,14 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
     i_label = i_label.cuda()
     t_label = t_label.cuda()
 
+    i2t_topk = min(mnn_topk, cap_embs.shape[0])
+    t2i_topk = min(mnn_topk, img_embs.shape[0])
+    logger.info(f"Top-k MNN schedule round {time_u}: reverse top-k={mnn_topk}")
+
     best_i2t = torch.zeros((data_loader.dataset.img_length, 2)).cuda()
     best_t2i = torch.zeros((data_loader.dataset.old_length, 2)).cuda()
+    topk_i2t = torch.zeros((data_loader.dataset.img_length, i2t_topk), dtype=torch.long).cuda()
+    topk_t2i = torch.zeros((data_loader.dataset.old_length, t2i_topk), dtype=torch.long).cuda()
 
 
     print("i2t correlation")
@@ -508,9 +531,11 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         sims = (torch.Tensor(img_embs[i * bs: end]).cuda()).mm( torch.Tensor(cap_embs).cuda().t()) 
         # sims = (torch.Tensor(img_embs[i * bs: end]).cuda()).mm( torch.Tensor(cap_embs).cuda().t()) 
      
-        max = sims.max(dim=1)
+        max = sims.topk(dim=1, k=i2t_topk)
         for j in range(i * bs, end):
-            best_i2t[j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
+            row = j - i * bs
+            best_i2t[j] = torch.Tensor(np.array([max[1][row][0].data.item(), max[0][row][0].data.item()])).cuda()
+            topk_i2t[j] = max[1][row]
         del sims
     print("t2i correlation")
     for i in range(n_t):
@@ -520,9 +545,11 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         end =  t_label.size(0) if i == n_t-1 else (i+1)*bs
         sims = (torch.Tensor(cap_embs[i * bs: end]).cuda()).mm( torch.Tensor(img_embs).cuda().t()) 
         # sims = (torch.Tensor(cap_embs[i * bs: end]).cuda()).mm( torch.Tensor(img_embs).cuda().t())
-        max = sims.max(dim=1)
+        max = sims.topk(dim=1, k=t2i_topk)
         for j in range(i * bs, end):
-            best_t2i[j] = torch.Tensor(np.array([max[1][j-i * bs].data.item(), max[0][j-i * bs].data.item()])).cuda()
+            row = j - i * bs
+            best_t2i[j] = torch.Tensor(np.array([max[1][row][0].data.item(), max[0][row][0].data.item()])).cuda()
+            topk_t2i[j] = max[1][row]
         del sims
 
     accepted_i2t = 0
@@ -531,7 +558,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         if i_label[j].data.item() == 1:
             mined_i2t += 1
             cap_id = int(best_i2t[j][0].data.item())
-            is_mutual = t_label[cap_id].data.item() == 1 and int(best_t2i[cap_id][0].data.item()) == j
+            is_mutual = t_label[cap_id].data.item() == 1 and (topk_t2i[cap_id] == j).any().data.item()
             accepted_i2t += int(is_mutual)
             memory_bank['hard_i2t'][j] = torch.Tensor(np.array([
                 cap_id,
@@ -547,7 +574,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         if t_label[j].data.item() == 1:
             mined_t2i += 1
             img_id = int(best_t2i[j][0].data.item())
-            is_mutual = i_label[img_id].data.item() == 1 and int(best_i2t[img_id][0].data.item()) == j
+            is_mutual = i_label[img_id].data.item() == 1 and (topk_i2t[img_id] == j).any().data.item()
             accepted_t2i += int(is_mutual)
             memory_bank['hard_t2i'][j] = torch.Tensor(np.array([
                 img_id,
@@ -557,10 +584,11 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         else:
             memory_bank['hard_t2i'][j] = torch.Tensor(np.array([j//5, 1, 1])).cuda()
 
-    logger.info(f"MNN i2t accepted: {accepted_i2t}/{mined_i2t}")
-    logger.info(f"MNN t2i accepted: {accepted_t2i}/{mined_t2i}")
+    logger.info(f"Top-k MNN i2t accepted: {accepted_i2t}/{mined_i2t} with reverse top-k={mnn_topk}")
+    logger.info(f"Top-k MNN t2i accepted: {accepted_t2i}/{mined_t2i} with reverse top-k={mnn_topk}")
     memory_bank['hard_i2t'] = memory_bank['hard_i2t'].detach().cpu().numpy()
     memory_bank['hard_t2i'] = memory_bank['hard_t2i'].detach().cpu().numpy()
+    memory_bank['meta'] = expected_meta
     
     del i_label,t_label,img_set_loader,cap_set_loader,img_set,cap_set
     torch.cuda.empty_cache()
