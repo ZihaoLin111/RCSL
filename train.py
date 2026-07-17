@@ -274,6 +274,136 @@ def validate(val_loader, model, mode='dev'):
     }, step=model.step)
         
     return currscore
+
+
+def check_the_mining_quality(train_loader, model, epoch=None):
+    logger = logging.getLogger(__name__)
+    if model.opt.stage != 'mining':
+        return
+
+    if 'f30k' in train_loader.dataset.opt.data_name:
+        bs = 1000
+    else:
+        bs = 400
+
+    model.val_start()
+    img_set = data.Img_dataset(train_loader.dataset.images)
+    cap_set = data.Cap_dataset(train_loader.dataset.captions, train_loader.dataset.vocab)
+    img_set_loader = torch.utils.data.DataLoader(dataset=img_set, batch_size=bs,
+                                            shuffle=False,
+                                            collate_fn=data.collate_fn_img,
+                                            num_workers=train_loader.num_workers,
+                                            drop_last=False)
+    cap_set_loader = torch.utils.data.DataLoader(dataset=cap_set, batch_size=bs,
+                                            shuffle=False,
+                                            collate_fn=data.collate_fn_cap,
+                                            num_workers=train_loader.num_workers,
+                                            drop_last=False)
+
+    img_embs = np.zeros((train_loader.dataset.img_length, model.opt.embed_size))
+    cap_embs = np.zeros((train_loader.dataset.old_length, model.opt.embed_size))
+
+    logger.info("compute mining quality embs")
+    for _, data_i in enumerate(img_set_loader):
+        images, image_lengths, img_ids = data_i
+        with torch.no_grad():
+            img_emb = model.forward_imgs(images, image_lengths)
+        img_embs[img_ids] = img_emb.data.cpu()
+
+    for _, data_i in enumerate(cap_set_loader):
+        captions, caption_lengths, cap_ids = data_i
+        with torch.no_grad():
+            cap_emb = model.forward_caps(captions, caption_lengths)
+        cap_embs[cap_ids] = cap_emb.data.cpu()
+
+    shuffle_inx = train_loader.dataset.shuffle_inx
+    img_unpaired = np.array([shuffle_inx[i] != i for i in range(train_loader.dataset.img_length)])
+    cap_unpaired = np.array([shuffle_inx[i // train_loader.dataset.im_div] != i // train_loader.dataset.im_div
+                             for i in range(train_loader.dataset.old_length)])
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    img_embs_t = torch.Tensor(img_embs).to(device)
+    cap_embs_t = torch.Tensor(cap_embs).to(device)
+    best_i2t = torch.zeros(train_loader.dataset.img_length, dtype=torch.long)
+    best_t2i = torch.zeros(train_loader.dataset.old_length, dtype=torch.long)
+
+    logger.info("compute mining quality nearest neighbors")
+    n_i = (img_embs_t.size(0) - 1) // bs + 1
+    n_t = (cap_embs_t.size(0) - 1) // bs + 1
+    for i in range(n_i):
+        end = img_embs_t.size(0) if i == n_i - 1 else (i + 1) * bs
+        sims = img_embs_t[i * bs:end].mm(cap_embs_t.t())
+        best_i2t[i * bs:end] = sims.max(dim=1)[1].detach().cpu()
+        del sims
+
+    for i in range(n_t):
+        end = cap_embs_t.size(0) if i == n_t - 1 else (i + 1) * bs
+        sims = cap_embs_t[i * bs:end].mm(img_embs_t.t())
+        best_t2i[i * bs:end] = sims.max(dim=1)[1].detach().cpu()
+        del sims
+
+    best_i2t = best_i2t.numpy()
+    best_t2i = best_t2i.numpy()
+    img_ids = np.arange(train_loader.dataset.img_length)
+    cap_ids = np.arange(train_loader.dataset.old_length)
+
+    i2t_nn_hit = img_unpaired & (best_i2t // train_loader.dataset.im_div == img_ids)
+    t2i_nn_hit = cap_unpaired & (best_t2i == cap_ids // train_loader.dataset.im_div)
+    i2t_mnn = img_unpaired & cap_unpaired[best_i2t] & (best_t2i[best_i2t] == img_ids)
+    t2i_mnn = cap_unpaired & img_unpaired[best_t2i] & (best_i2t[best_t2i] == cap_ids)
+    i2t_mnn_gt_hit = i2t_mnn & (best_i2t // train_loader.dataset.im_div == img_ids)
+    t2i_mnn_gt_hit = t2i_mnn & (best_t2i == cap_ids // train_loader.dataset.im_div)
+
+    metrics = {
+        'mining_quality/i2t_nn_hit': int(i2t_nn_hit.sum()),
+        'mining_quality/i2t_unpaired': int(img_unpaired.sum()),
+        'mining_quality/i2t_nn_hit_rate': float(i2t_nn_hit.sum() / (img_unpaired.sum() + 1e-12)),
+        'mining_quality/t2i_nn_hit': int(t2i_nn_hit.sum()),
+        'mining_quality/t2i_unpaired': int(cap_unpaired.sum()),
+        'mining_quality/t2i_nn_hit_rate': float(t2i_nn_hit.sum() / (cap_unpaired.sum() + 1e-12)),
+        'mining_quality/i2t_mnn': int(i2t_mnn.sum()),
+        'mining_quality/i2t_mnn_rate': float(i2t_mnn.sum() / (img_unpaired.sum() + 1e-12)),
+        'mining_quality/i2t_mnn_gt_hit': int(i2t_mnn_gt_hit.sum()),
+        'mining_quality/i2t_mnn_gt_hit_rate': float(i2t_mnn_gt_hit.sum() / (img_unpaired.sum() + 1e-12)),
+        'mining_quality/i2t_mnn_precision': float(i2t_mnn_gt_hit.sum() / (i2t_mnn.sum() + 1e-12)),
+        'mining_quality/t2i_mnn': int(t2i_mnn.sum()),
+        'mining_quality/t2i_mnn_rate': float(t2i_mnn.sum() / (cap_unpaired.sum() + 1e-12)),
+        'mining_quality/t2i_mnn_gt_hit': int(t2i_mnn_gt_hit.sum()),
+        'mining_quality/t2i_mnn_gt_hit_rate': float(t2i_mnn_gt_hit.sum() / (cap_unpaired.sum() + 1e-12)),
+        'mining_quality/t2i_mnn_precision': float(t2i_mnn_gt_hit.sum() / (t2i_mnn.sum() + 1e-12)),
+    }
+    if epoch is not None:
+        metrics['epoch'] = epoch
+
+    logger.info(
+        "mining quality i2t NN GT hit: {}/{} ({:.4f}), MNN: {}/{} ({:.4f}), MNN GT hit: {} ({:.4f}), MNN precision: {:.4f}".format(
+            metrics['mining_quality/i2t_nn_hit'],
+            metrics['mining_quality/i2t_unpaired'],
+            metrics['mining_quality/i2t_nn_hit_rate'],
+            metrics['mining_quality/i2t_mnn'],
+            metrics['mining_quality/i2t_unpaired'],
+            metrics['mining_quality/i2t_mnn_rate'],
+            metrics['mining_quality/i2t_mnn_gt_hit'],
+            metrics['mining_quality/i2t_mnn_gt_hit_rate'],
+            metrics['mining_quality/i2t_mnn_precision']))
+    logger.info(
+        "mining quality t2i NN GT hit: {}/{} ({:.4f}), MNN: {}/{} ({:.4f}), MNN GT hit: {} ({:.4f}), MNN precision: {:.4f}".format(
+            metrics['mining_quality/t2i_nn_hit'],
+            metrics['mining_quality/t2i_unpaired'],
+            metrics['mining_quality/t2i_nn_hit_rate'],
+            metrics['mining_quality/t2i_mnn'],
+            metrics['mining_quality/t2i_unpaired'],
+            metrics['mining_quality/t2i_mnn_rate'],
+            metrics['mining_quality/t2i_mnn_gt_hit'],
+            metrics['mining_quality/t2i_mnn_gt_hit_rate'],
+            metrics['mining_quality/t2i_mnn_precision']))
+    wandb_logger.log_values(metrics, step=model.step)
+
+    del img_embs_t, cap_embs_t, img_set_loader, cap_set_loader, img_set, cap_set
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def com(memory_bank,th=0.5,shuffle_inx=None):
     logger = logging.getLogger(__name__)
     len_ = 0
@@ -543,6 +673,8 @@ if __name__ == '__main__':
         # # evaluate on validation set
         rsum = validate(val_loader, model, 'dev')
         validate(test_loader, model, 'test')
+
+        check_the_mining_quality(train_loader, model, epoch=epoch)
 
         # remember best R@ sum and save checkpoint
         is_best = rsum > best_rsum
