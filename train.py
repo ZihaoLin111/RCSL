@@ -565,6 +565,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
             topk_t2i_scores[j] = max[0][row]
         del sims
 
+    accepted_pairs = set()
     accepted_i2t = 0
     mined_i2t = 0
     for j in range(data_loader.dataset.img_length):
@@ -578,6 +579,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
             if is_mutual:
                 cap_id = int(candidate_ids[rank].data.item())
                 match_score = topk_i2t_scores[j][rank].data.item()
+                accepted_pairs.add((j, cap_id))
             accepted_i2t += int(is_mutual)
             memory_bank['hard_i2t'][j] = torch.Tensor(np.array([
                 cap_id,
@@ -600,6 +602,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
             if is_mutual:
                 img_id = int(candidate_ids[rank].data.item())
                 match_score = topk_t2i_scores[j][rank].data.item()
+                accepted_pairs.add((img_id, j))
             accepted_t2i += int(is_mutual)
             memory_bank['hard_t2i'][j] = torch.Tensor(np.array([
                 img_id,
@@ -611,6 +614,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
 
     logger.info(f"Bidirectional top-k MNN i2t accepted: {accepted_i2t}/{mined_i2t} with top-k={mnn_topk}")
     logger.info(f"Bidirectional top-k MNN t2i accepted: {accepted_t2i}/{mined_t2i} with top-k={mnn_topk}")
+    logger.info(f"Mining round {time_u} accepted unique pairs: {len(accepted_pairs)}")
     memory_bank['hard_i2t'] = memory_bank['hard_i2t'].detach().cpu().numpy()
     memory_bank['hard_t2i'] = memory_bank['hard_t2i'].detach().cpu().numpy()
     memory_bank['meta'] = expected_meta
