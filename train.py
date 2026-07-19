@@ -433,11 +433,20 @@ def get_scheduled_mnn_topk(opt, mining_round):
     return max(1, int(round(start + (end - start) * progress)))
 
 
+def find_bidirectional_topk_rank(query_id, candidate_ids, reverse_topk, candidate_labels):
+    mutual_candidates = candidate_labels[candidate_ids].bool()
+    mutual_candidates &= (reverse_topk[candidate_ids] == query_id).any(dim=1)
+    mutual_ranks = mutual_candidates.nonzero(as_tuple=False)
+    if mutual_ranks.numel() == 0:
+        return None
+    return int(mutual_ranks[0][0].data.item())
+
+
 def UpdateMemoryBank(data_loader, model, time_u=0):
     logger = logging.getLogger(__name__)
     mnn_topk = get_scheduled_mnn_topk(model.opt, time_u)
     expected_meta = {
-        'mnn_mode': 'top1_reverse_topk',
+        'mnn_mode': 'bidirectional_topk',
         'mnn_topk': mnn_topk,
     }
     memory_bank_path = model.opt.logger_path+f'/memory_bank_{time_u}.npy'
@@ -512,12 +521,14 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
 
     i2t_topk = min(mnn_topk, cap_embs.shape[0])
     t2i_topk = min(mnn_topk, img_embs.shape[0])
-    logger.info(f"Top-k MNN schedule round {time_u}: reverse top-k={mnn_topk}")
+    logger.info(f"Bidirectional top-k MNN schedule round {time_u}: top-k={mnn_topk}")
 
     best_i2t = torch.zeros((data_loader.dataset.img_length, 2)).cuda()
     best_t2i = torch.zeros((data_loader.dataset.old_length, 2)).cuda()
     topk_i2t = torch.zeros((data_loader.dataset.img_length, i2t_topk), dtype=torch.long).cuda()
     topk_t2i = torch.zeros((data_loader.dataset.old_length, t2i_topk), dtype=torch.long).cuda()
+    topk_i2t_scores = torch.zeros((data_loader.dataset.img_length, i2t_topk)).cuda()
+    topk_t2i_scores = torch.zeros((data_loader.dataset.old_length, t2i_topk)).cuda()
 
 
     print("i2t correlation")
@@ -536,6 +547,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
             row = j - i * bs
             best_i2t[j] = torch.Tensor(np.array([max[1][row][0].data.item(), max[0][row][0].data.item()])).cuda()
             topk_i2t[j] = max[1][row]
+            topk_i2t_scores[j] = max[0][row]
         del sims
     print("t2i correlation")
     for i in range(n_t):
@@ -550,6 +562,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
             row = j - i * bs
             best_t2i[j] = torch.Tensor(np.array([max[1][row][0].data.item(), max[0][row][0].data.item()])).cuda()
             topk_t2i[j] = max[1][row]
+            topk_t2i_scores[j] = max[0][row]
         del sims
 
     accepted_i2t = 0
@@ -558,11 +571,17 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         if i_label[j].data.item() == 1:
             mined_i2t += 1
             cap_id = int(best_i2t[j][0].data.item())
-            is_mutual = t_label[cap_id].data.item() == 1 and (topk_t2i[cap_id] == j).any().data.item()
+            match_score = best_i2t[j][1].data.item()
+            candidate_ids = topk_i2t[j]
+            rank = find_bidirectional_topk_rank(j, candidate_ids, topk_t2i, t_label)
+            is_mutual = rank is not None
+            if is_mutual:
+                cap_id = int(candidate_ids[rank].data.item())
+                match_score = topk_i2t_scores[j][rank].data.item()
             accepted_i2t += int(is_mutual)
             memory_bank['hard_i2t'][j] = torch.Tensor(np.array([
                 cap_id,
-                best_i2t[j][1].data.item(),
+                match_score,
                 1 if is_mutual else 0
             ])).cuda()
         else:
@@ -574,23 +593,29 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
         if t_label[j].data.item() == 1:
             mined_t2i += 1
             img_id = int(best_t2i[j][0].data.item())
-            is_mutual = i_label[img_id].data.item() == 1 and (topk_i2t[img_id] == j).any().data.item()
+            match_score = best_t2i[j][1].data.item()
+            candidate_ids = topk_t2i[j]
+            rank = find_bidirectional_topk_rank(j, candidate_ids, topk_i2t, i_label)
+            is_mutual = rank is not None
+            if is_mutual:
+                img_id = int(candidate_ids[rank].data.item())
+                match_score = topk_t2i_scores[j][rank].data.item()
             accepted_t2i += int(is_mutual)
             memory_bank['hard_t2i'][j] = torch.Tensor(np.array([
                 img_id,
-                best_t2i[j][1].data.item(),
+                match_score,
                 1 if is_mutual else 0
             ])).cuda()
         else:
             memory_bank['hard_t2i'][j] = torch.Tensor(np.array([j//5, 1, 1])).cuda()
 
-    logger.info(f"Top-k MNN i2t accepted: {accepted_i2t}/{mined_i2t} with reverse top-k={mnn_topk}")
-    logger.info(f"Top-k MNN t2i accepted: {accepted_t2i}/{mined_t2i} with reverse top-k={mnn_topk}")
+    logger.info(f"Bidirectional top-k MNN i2t accepted: {accepted_i2t}/{mined_i2t} with top-k={mnn_topk}")
+    logger.info(f"Bidirectional top-k MNN t2i accepted: {accepted_t2i}/{mined_t2i} with top-k={mnn_topk}")
     memory_bank['hard_i2t'] = memory_bank['hard_i2t'].detach().cpu().numpy()
     memory_bank['hard_t2i'] = memory_bank['hard_t2i'].detach().cpu().numpy()
     memory_bank['meta'] = expected_meta
     
-    del i_label,t_label,img_set_loader,cap_set_loader,img_set,cap_set
+    del i_label,t_label,best_i2t,best_t2i,topk_i2t,topk_t2i,topk_i2t_scores,topk_t2i_scores,img_set_loader,cap_set_loader,img_set,cap_set
     torch.cuda.empty_cache()
     np.save(memory_bank_path, memory_bank)
     return memory_bank

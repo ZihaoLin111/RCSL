@@ -40,9 +40,9 @@ def get_argument_parser():
     parser.add_argument('--memory_update_interval', default=5, type=int,
                         help='Number of mining-stage epochs between memory bank refreshes.')
     parser.add_argument('--mnn_topk_start', default=10, type=int,
-                        help='Reverse top-k used by top1+top-k mining at the first memory update.')
+                        help='Bidirectional top-k used by MNN mining at the first memory update.')
     parser.add_argument('--mnn_topk_end', default=1, type=int,
-                        help='Reverse top-k used by top1+top-k mining after the schedule finishes.')
+                        help='Bidirectional top-k used by MNN mining after the schedule finishes.')
     parser.add_argument('--mnn_topk_decay_rounds', default=3, type=int,
                         help='Number of memory-update rounds to anneal mnn_topk_start to mnn_topk_end.')
     parser.add_argument('--UpdateEpoch', default=35, type=int)
