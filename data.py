@@ -12,6 +12,12 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 class Img_dataset(data.Dataset):
     def __init__(self, images):
         self.img_length = len(images)
@@ -102,12 +108,12 @@ class PrecompDataset_gru(data.Dataset):
             if self.paired_length < -1:
                 self.paired_length = self.length
  
-            np.random.seed(123)
+            rng = np.random.RandomState(int(getattr(self.opt, 'seed', 42)))
             inx = np.arange(self.img_length)
-            np.random.shuffle(inx)
+            rng.shuffle(inx)
             noisy_inx = inx[int(self.paired_length):]  # paired_length < cap_len
             shuffle_inx = np.array(noisy_inx)
-            np.random.shuffle(shuffle_inx)
+            rng.shuffle(shuffle_inx)
             self.shuffle_inx[noisy_inx] = shuffle_inx
             print('eg', self.shuffle_inx[0:10])
             self.labels = []
@@ -116,8 +122,7 @@ class PrecompDataset_gru(data.Dataset):
                     self.labels.append(1)
                 else:
                     self.labels.append(0)
-            print(f'paired {sum(self.labels)}')    
-            np.random.seed(random.randint(1,1024))
+            print(f'paired {sum(self.labels)}')
 
         if self.images.shape[0] != self.length:
             self.im_div = 5
@@ -286,13 +291,19 @@ def get_loader(data_path, data_split, vocab_or_tokenizer, opt, batch_size=100,
         drop_last = False
 
     data_set = PrecompDataset_gru(opt, data_path, data_split, vocab_or_tokenizer)
+    generator = torch.Generator()
+    split_offset = {'train': 0, 'dev': 1, 'test': 2, 'testall': 3}.get(data_split, 4)
+    generator.manual_seed(int(getattr(opt, 'seed', 42)) + split_offset)
+
     data_loader = torch.utils.data.DataLoader(dataset=data_set,
                                               batch_size=batch_size,
                                               shuffle=shuffle,
                                               pin_memory=False,
                                               collate_fn=collate_fn,
                                               num_workers=num_workers,
-                                              drop_last=drop_last)
+                                              drop_last=drop_last,
+                                              worker_init_fn=seed_worker,
+                                              generator=generator)
 
     return data_loader
 

@@ -132,7 +132,8 @@ class SVSE(nn.Module):
         if torch.cuda.is_available():
             self.img_enc.cuda()
             self.txt_enc.cuda()
-            cudnn.benchmark = True
+            cudnn.deterministic = True
+            cudnn.benchmark = False
 
         params = list(self.img_enc.parameters())
         params += list(self.txt_enc.parameters())
