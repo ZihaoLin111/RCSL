@@ -47,6 +47,8 @@ def get_argument_parser():
                         help='Bidirectional top-k used by MNN mining after the schedule finishes.')
     parser.add_argument('--mnn_topk_decay_rounds', default=2, type=int,
                         help='Number of memory-update rounds to interpolate mnn_topk_start to mnn_topk_end.')
+    parser.add_argument('--rejected_weight_floor', default=0.5, type=float,
+                        help='Minimum mining-loss weight for pseudo-pairs rejected by bidirectional top-k.')
     parser.add_argument('--UpdateEpoch', default=35, type=int)
                                       
     parser.add_argument('--lr_update', default=15, type=int,

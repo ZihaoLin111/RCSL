@@ -656,6 +656,7 @@ if __name__ == '__main__':
     logger = init_logging(opt.logger_path + '/log.txt')
     logger.info(f"===>PID:{os.getpid()}, GPU:[{opt.gpu}]")
     logger.info(f"Random seed: {opt.seed}; cuDNN deterministic=True, benchmark=False")
+    logger.info(f"Rejected-pair mining weight floor: {opt.rejected_weight_floor}")
     logger.info(opt)
     # Load Vocabulary
 
