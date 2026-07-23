@@ -14,6 +14,11 @@ def get_sim(a, b):
     sims = a.mm(b.t()) # have normed
     return sims
 
+
+def apply_rejected_weight_floor(accepted_flags, floor):
+    return accepted_flags.clamp(min=floor)
+
+
 def l2norm(X, dim, eps=1e-8):
     """L2-normalize columns of X
     """
@@ -121,6 +126,9 @@ class SVSE(nn.Module):
     def __init__(self, opt,word2idx):
         super(SVSE, self).__init__()
         self.opt = opt
+        self.rejected_weight_floor = float(getattr(opt, 'rejected_weight_floor', 0.0))
+        if not 0.0 <= self.rejected_weight_floor <= 1.0:
+            raise ValueError('rejected_weight_floor must be between 0 and 1')
         self.parallel = False
         # based models
         self.img_enc = get_image_encoder(opt)
@@ -132,7 +140,8 @@ class SVSE(nn.Module):
         if torch.cuda.is_available():
             self.img_enc.cuda()
             self.txt_enc.cuda()
-            cudnn.benchmark = True
+            cudnn.deterministic = True
+            cudnn.benchmark = False
 
         params = list(self.img_enc.parameters())
         params += list(self.txt_enc.parameters())
@@ -275,9 +284,11 @@ class SVSE(nn.Module):
                 cap_indices = torch.as_tensor(cap_ids[paired_l:], device=sims1.device, dtype=torch.long)
                 img_indices = torch.as_tensor(img_ids[paired_l:], device=sims2.device, dtype=torch.long)
                 if cap_indices.numel() > 0:
-                    weights_img[paired_l:] = hard_t2i[cap_indices, 2]
+                    weights_img[paired_l:] = apply_rejected_weight_floor(
+                        hard_t2i[cap_indices, 2], self.rejected_weight_floor)
                 if img_indices.numel() > 0:
-                    weights_txt[paired_l:] = hard_i2t[img_indices, 2]
+                    weights_txt[paired_l:] = apply_rejected_weight_floor(
+                        hard_i2t[img_indices, 2], self.rejected_weight_floor)
      
             loss2 += self.robust_mining_loss(sims1,  tau=tau, weights=weights_img) 
             loss2 += self.robust_mining_loss(sims2,  tau=tau, weights=weights_txt)

@@ -1,9 +1,11 @@
 # coding=utf-8
 import logging
 import os
+import random
 import time
 import numpy as np
 import torch 
+import torch.backends.cudnn as cudnn
 
 import shutil
 import opts
@@ -17,6 +19,18 @@ from vocab import deserialize_vocab, deserialize_vocab_glove
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def set_random_seed(seed):
+    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    cudnn.deterministic = True
+    cudnn.benchmark = False
 
 
 class WandbLogger(object):
@@ -571,6 +585,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
 if __name__ == '__main__':
     parser = opts.get_argument_parser()
     opt = parser.parse_args()
+    set_random_seed(opt.seed)
 
     # Make dir
     if not os.path.isdir(opt.model_path):
@@ -583,6 +598,8 @@ if __name__ == '__main__':
     wandb_logger.configure(opt)
     logger = init_logging(opt.logger_path + '/log.txt')
     logger.info(f"===>PID:{os.getpid()}, GPU:[{opt.gpu}]")
+    logger.info(f"Random seed: {opt.seed}; cuDNN deterministic=True, benchmark=False")
+    logger.info(f"Rejected-pair mining weight floor: {opt.rejected_weight_floor}")
     logger.info(opt)
     # Load Vocabulary
 

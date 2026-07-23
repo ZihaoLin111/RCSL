@@ -5,6 +5,8 @@ import os
 def get_argument_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default='0')
+    parser.add_argument('--seed', default=42, type=int,
+                        help='Random seed for data construction, augmentation, and model training.')
     parser.add_argument('--tau', default=0.03, type=float)
     parser.add_argument('--stage', default='learning', type=str)
 
@@ -39,6 +41,8 @@ def get_argument_parser():
     parser.add_argument('--MineEpoch', default=25, type=int)
     parser.add_argument('--memory_update_interval', default=5, type=int,
                         help='Number of mining-stage epochs between memory bank refreshes.')
+    parser.add_argument('--rejected_weight_floor', default=0.5, type=float,
+                        help='Minimum mining-loss weight for pseudo-pairs rejected by MNN.')
     parser.add_argument('--UpdateEpoch', default=35, type=int)
                                       
     parser.add_argument('--lr_update', default=15, type=int,
