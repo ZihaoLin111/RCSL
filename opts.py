@@ -41,11 +41,11 @@ def get_argument_parser():
     parser.add_argument('--MineEpoch', default=25, type=int)
     parser.add_argument('--memory_update_interval', default=5, type=int,
                         help='Number of mining-stage epochs between memory bank refreshes.')
-    parser.add_argument('--mnn_topk_start', default=1, type=int,
+    parser.add_argument('--mnn_topk_start', default=10, type=int,
                         help='Bidirectional top-k used by MNN mining at the first memory update.')
-    parser.add_argument('--mnn_topk_end', default=7, type=int,
+    parser.add_argument('--mnn_topk_end', default=1, type=int,
                         help='Bidirectional top-k used by MNN mining after the schedule finishes.')
-    parser.add_argument('--mnn_topk_decay_rounds', default=2, type=int,
+    parser.add_argument('--mnn_topk_decay_rounds', default=3, type=int,
                         help='Number of memory-update rounds to interpolate mnn_topk_start to mnn_topk_end.')
     parser.add_argument('--rejected_weight_floor', default=0.5, type=float,
                         help='Minimum mining-loss weight for pseudo-pairs rejected by bidirectional top-k.')
