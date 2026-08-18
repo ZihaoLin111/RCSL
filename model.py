@@ -126,9 +126,12 @@ class SVSE(nn.Module):
     def __init__(self, opt,word2idx):
         super(SVSE, self).__init__()
         self.opt = opt
-        self.rejected_weight_floor = float(getattr(opt, 'rejected_weight_floor', 0.0))
+        if getattr(opt, 'mining_method', 'mnn') == 'ot':
+            self.rejected_weight_floor = float(getattr(opt, 'ot_weight_floor', 0.0))
+        else:
+            self.rejected_weight_floor = float(getattr(opt, 'rejected_weight_floor', 0.0))
         if not 0.0 <= self.rejected_weight_floor <= 1.0:
-            raise ValueError('rejected_weight_floor must be between 0 and 1')
+            raise ValueError('mining weight floor must be between 0 and 1')
         self.parallel = False
         # based models
         self.img_enc = get_image_encoder(opt)

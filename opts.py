@@ -1,6 +1,25 @@
 import argparse
+import math
 import random
 import os
+
+
+def validate_options(opt):
+    if not 0.0 <= opt.ot_weight_floor <= 1.0:
+        raise ValueError('ot_weight_floor must be between 0 and 1')
+    if opt.ot_candidate_k < 1:
+        raise ValueError('ot_candidate_k must be at least 1')
+    if not math.isfinite(opt.ot_epsilon) or opt.ot_epsilon <= 0:
+        raise ValueError('ot_epsilon must be finite and positive')
+    if not math.isfinite(opt.ot_rho) or opt.ot_rho <= 0:
+        raise ValueError('ot_rho must be finite and positive')
+    if opt.ot_max_iter < 1:
+        raise ValueError('ot_max_iter must be at least 1')
+    if not math.isfinite(opt.ot_tol) or opt.ot_tol <= 0:
+        raise ValueError('ot_tol must be finite and positive')
+    if opt.ot_block_size < 1:
+        raise ValueError('ot_block_size must be at least 1')
+    return opt
 
 def get_argument_parser():
     parser = argparse.ArgumentParser()
@@ -9,6 +28,8 @@ def get_argument_parser():
                         help='Random seed for data construction, augmentation, and model training.')
     parser.add_argument('--tau', default=0.03, type=float)
     parser.add_argument('--stage', default='learning', type=str)
+    parser.add_argument('--mining_method', default='mnn', choices=('mnn', 'ot'),
+                        help='Pseudo-pair mining method used after MineEpoch.')
 
     parser.add_argument('--mining_start', default=10, type=int)
     parser.add_argument('--paired_length', default=5000, type=int)
@@ -43,6 +64,23 @@ def get_argument_parser():
                         help='Number of mining-stage epochs between memory bank refreshes.')
     parser.add_argument('--rejected_weight_floor', default=0.5, type=float,
                         help='Minimum mining-loss weight for pseudo-pairs rejected by MNN.')
+    parser.add_argument('--ot_weight_floor', default=0.0, type=float,
+                        help='Minimum O2 confidence used by the mining loss.')
+    parser.add_argument('--ot_candidate_k', default=32, type=int,
+                        help='Top-k candidates retained in each direction for sparse O2 UOT.')
+    parser.add_argument('--ot_epsilon', default=0.05, type=float,
+                        help='Entropy regularization used by O2 UOT.')
+    parser.add_argument('--ot_rho', default=1.0, type=float,
+                        help='Marginal KL penalty used by O2 UOT.')
+    parser.add_argument('--ot_max_iter', default=200, type=int,
+                        help='Maximum number of O2 UOT iterations.')
+    parser.add_argument('--ot_tol', default=1e-3, type=float,
+                        help='O2 UOT log-scaling convergence tolerance.')
+    parser.add_argument('--ot_block_size', default=1024, type=int,
+                        help='Similarity block size for O2 candidate construction.')
+    parser.add_argument('--ot_confidence', default='mass_concentration',
+                        choices=('row_mass', 'concentration', 'mass_concentration'),
+                        help='Continuous confidence stored in the O2 memory bank.')
     parser.add_argument('--UpdateEpoch', default=35, type=int)
                                       
     parser.add_argument('--lr_update', default=15, type=int,

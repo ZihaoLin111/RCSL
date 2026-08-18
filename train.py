@@ -15,6 +15,7 @@ import data
 from utils import save_config, cosine_similarity_matrix
 from evaluation import AverageMeter, LogCollector, encode_data, evalrank, i2t, t2i
 from model import SVSE
+from ot_mining import mine_o2_pairs
 from vocab import deserialize_vocab, deserialize_vocab_glove
 import warnings
 
@@ -439,6 +440,140 @@ def com(memory_bank,th=0.5,shuffle_inx=None):
     logger.info(f"t2i hard matched:  {count_}, {len_}, {count_/(len_+1)}")
 
 
+def _encode_memory_bank_embeddings(data_loader, model, batch_size):
+    dataset = data_loader.dataset
+    model.val_start()
+    img_set = data.Img_dataset(dataset.images)
+    cap_set = data.Cap_dataset(dataset.captions, dataset.vocab)
+    img_set_loader = torch.utils.data.DataLoader(
+        dataset=img_set,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data.collate_fn_img,
+        num_workers=data_loader.num_workers,
+        drop_last=False,
+    )
+    cap_set_loader = torch.utils.data.DataLoader(
+        dataset=cap_set,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data.collate_fn_cap,
+        num_workers=data_loader.num_workers,
+        drop_last=False,
+    )
+    embedding_dim = int(model.opt.embed_size)
+    img_embs = np.zeros((dataset.img_length, embedding_dim), dtype=np.float32)
+    cap_embs = np.zeros((dataset.old_length, embedding_dim), dtype=np.float32)
+    for images, image_lengths, img_ids in img_set_loader:
+        with torch.no_grad():
+            img_emb = model.forward_imgs(images, image_lengths)
+        img_embs[img_ids] = img_emb.detach().cpu().numpy()
+    for captions, caption_lengths, cap_ids in cap_set_loader:
+        with torch.no_grad():
+            cap_emb = model.forward_caps(captions, caption_lengths)
+        cap_embs[cap_ids] = cap_emb.detach().cpu().numpy()
+    return img_embs, cap_embs
+
+
+def UpdateOTMemoryBank(data_loader, model, time_u=0):
+    logger = logging.getLogger(__name__)
+    opt = model.opt
+    memory_bank_path = os.path.join(opt.logger_path, f'memory_bank_ot_{time_u}.npy')
+    ot_config = {
+        'candidate_k': int(opt.ot_candidate_k),
+        'epsilon': float(opt.ot_epsilon),
+        'rho': float(opt.ot_rho),
+        'max_iter': int(opt.ot_max_iter),
+        'tol': float(opt.ot_tol),
+        'block_size': int(opt.ot_block_size),
+        'confidence_mode': str(opt.ot_confidence),
+    }
+    if os.path.exists(memory_bank_path):
+        memory_bank = np.load(memory_bank_path, allow_pickle=True).item()
+        if memory_bank.get('ot_config') == ot_config:
+            logger.info(f"=> loading cached O2 memory bank: {memory_bank_path}")
+            return memory_bank
+        logger.info("=> cached O2 memory bank configuration changed, recomputing")
+
+    dataset = data_loader.dataset
+    if dataset.im_div < 1 or dataset.old_length != dataset.img_length * dataset.im_div:
+        raise ValueError('O2 requires a fixed number of captions per image group')
+    embedding_batch_size = 1000 if 'f30k' in dataset.opt.data_name else 400
+    logger.info("Compute embeddings for O2 memory-bank update")
+    img_embs, cap_embs = _encode_memory_bank_embeddings(
+        data_loader, model, embedding_batch_size
+    )
+    image_ids = np.arange(dataset.img_length, dtype=np.int64)
+    caption_ids = np.arange(dataset.old_length, dtype=np.int64)
+    caption_group_ids = caption_ids // dataset.im_div
+    unpaired_image_mask = dataset.shuffle_inx != image_ids
+    unpaired_caption_mask = dataset.shuffle_inx[caption_group_ids] != caption_group_ids
+    unpaired_image_ids = image_ids[unpaired_image_mask]
+    unpaired_caption_ids = caption_ids[unpaired_caption_mask]
+
+    hard_i2t = np.zeros((dataset.img_length, 3), dtype=np.float32)
+    hard_t2i = np.zeros((dataset.old_length, 3), dtype=np.float32)
+    hard_i2t[:, 0] = image_ids * dataset.im_div
+    hard_i2t[:, 1:] = 1.0
+    hard_t2i[:, 0] = caption_group_ids
+    hard_t2i[:, 1:] = 1.0
+    diagnostics = {
+        'unpaired_images': int(unpaired_image_ids.size),
+        'unpaired_captions': int(unpaired_caption_ids.size),
+    }
+
+    if unpaired_image_ids.size > 0:
+        device = next(model.img_enc.parameters()).device
+        mined = mine_o2_pairs(
+            image_embeddings=torch.from_numpy(img_embs[unpaired_image_ids]),
+            caption_embeddings=torch.from_numpy(cap_embs[unpaired_caption_ids]),
+            candidate_k=opt.ot_candidate_k,
+            epsilon=opt.ot_epsilon,
+            rho=opt.ot_rho,
+            max_iter=opt.ot_max_iter,
+            tol=opt.ot_tol,
+            block_size=opt.ot_block_size,
+            confidence_mode=opt.ot_confidence,
+            device=device,
+        )
+        matched_caption_ids = unpaired_caption_ids[mined.i2t_indices.numpy()]
+        matched_image_ids = unpaired_image_ids[mined.t2i_indices.numpy()]
+        hard_i2t[unpaired_image_ids, 0] = matched_caption_ids
+        hard_i2t[unpaired_image_ids, 1] = mined.i2t_scores.numpy()
+        hard_i2t[unpaired_image_ids, 2] = mined.i2t_confidence.numpy()
+        hard_t2i[unpaired_caption_ids, 0] = matched_image_ids
+        hard_t2i[unpaired_caption_ids, 1] = mined.t2i_scores.numpy()
+        hard_t2i[unpaired_caption_ids, 2] = mined.t2i_confidence.numpy()
+        i2t_hits = matched_caption_ids // dataset.im_div == unpaired_image_ids
+        t2i_hits = matched_image_ids == unpaired_caption_ids // dataset.im_div
+        diagnostics.update(mined.diagnostics)
+        if not bool(mined.diagnostics['converged']):
+            logger.warning(
+                "O2 UOT reached max_iter without satisfying the convergence tolerance"
+            )
+        diagnostics.update({
+            'i2t_gt_hit_rate': float(i2t_hits.mean()),
+            't2i_gt_hit_rate': float(t2i_hits.mean()),
+        })
+
+    memory_bank = {
+        'hard_i2t': hard_i2t,
+        'hard_t2i': hard_t2i,
+        'ot_config': ot_config,
+        'ot_diagnostics': diagnostics,
+    }
+    np.save(memory_bank_path, memory_bank)
+    logger.info(f"O2 diagnostics: {diagnostics}")
+    wandb_logger.log_values(
+        {f'ot/{key}': value for key, value in diagnostics.items()},
+        step=model.step,
+    )
+    del img_embs, cap_embs
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return memory_bank
+
+
 def UpdateMemoryBank(data_loader, model, time_u=0):
     logger = logging.getLogger(__name__)
     memory_bank_path = model.opt.logger_path+f'/memory_bank_{time_u}.npy'
@@ -584,7 +719,7 @@ def UpdateMemoryBank(data_loader, model, time_u=0):
 
 if __name__ == '__main__':
     parser = opts.get_argument_parser()
-    opt = parser.parse_args()
+    opt = opts.validate_options(parser.parse_args())
     set_random_seed(opt.seed)
 
     # Make dir
@@ -599,7 +734,7 @@ if __name__ == '__main__':
     logger = init_logging(opt.logger_path + '/log.txt')
     logger.info(f"===>PID:{os.getpid()}, GPU:[{opt.gpu}]")
     logger.info(f"Random seed: {opt.seed}; cuDNN deterministic=True, benchmark=False")
-    logger.info(f"Rejected-pair mining weight floor: {opt.rejected_weight_floor}")
+    logger.info(f"Mining method: {opt.mining_method}")
     logger.info(opt)
     # Load Vocabulary
 
@@ -612,6 +747,7 @@ if __name__ == '__main__':
         word2idx = None
     opt.vocab_size = len(vocab_or_tokenizer)
     model = SVSE(opt,word2idx)
+    logger.info(f"Mining weight floor: {model.rejected_weight_floor}")
     if not model.parallel:
         model.make_data_parallel()
 
@@ -638,7 +774,8 @@ if __name__ == '__main__':
             model.opt = opt
             if opt.stage == 'mining':
                 model.memory_bank = checkpoint['memory_bank']
-                memory_bank_path = model.opt.logger_path+f'/memory_bank_0.npy' 
+                memory_bank_name = 'memory_bank_ot_0.npy' if opt.mining_method == 'ot' else 'memory_bank_0.npy'
+                memory_bank_path = os.path.join(model.opt.logger_path, memory_bank_name)
                 np.save(memory_bank_path,  model.memory_bank)
                 
             model.reinit_optimizer()
@@ -678,7 +815,10 @@ if __name__ == '__main__':
             should_update_memory = model.memory_bank is None or mining_epoch % memory_update_interval == 0
             if should_update_memory:
                 logger.info(f"Start mining memory update round {mining_round}")
-                memory_bank = UpdateMemoryBank(train_loader, model, time_u=mining_round)
+                if opt.mining_method == 'ot':
+                    memory_bank = UpdateOTMemoryBank(train_loader, model, time_u=mining_round)
+                else:
+                    memory_bank = UpdateMemoryBank(train_loader, model, time_u=mining_round)
                 model.memory_bank = memory_bank
             else:
                 logger.info(f"Reuse mining memory bank round {mining_round}")

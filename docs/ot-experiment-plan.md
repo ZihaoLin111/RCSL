@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：待实现
+- 状态：O1 与 O2 代码已实现、完整训练效果待验证；O3/O4 待实现
 - 基线分支：`feature/mnn-mining`和`baseline`
 - 实验分支：`feature/ot-experiment`
 - 首要数据集：Flickr30K (`f30k_precomp`)
@@ -314,3 +314,21 @@ OT 被认为值得保留，需要同时满足：
 - [ ] 固定超参数后完成阶段 D 多种子实验。
 - [ ] 汇总均值、方差、逐 seed 配对差值、失败案例和资源开销；扩展到至少五个 seed 后再给置信区间。
 - [ ] 根据成功标准决定保留 OT、仅保留 top-k 软匹配，或否定该方向。
+
+## 13. O2 运行方式
+
+O2 保持现有单伪配对 memory-bank 和 mining loss 接口，只把 MNN 更新替换为稀疏 UOT：
+
+```bash
+PAIRED_LENGTH=1000 SEED=42 OT_WEIGHT_FLOOR=0.0 sh train_o2.sh
+```
+
+关键实现：
+
+- `ot_mining.py::build_bidirectional_topk_graph`：构建双向 top-k 稀疏候选图。
+- `ot_mining.py::sparse_unbalanced_sinkhorn`：求解稀疏 UOT。
+- `ot_mining.py::mine_o2_pairs`：回写双向 top-1 索引、条件质量和连续置信度。
+- `train.py::UpdateOTMemoryBank`：抽取全局嵌入、映射全局样本 ID、缓存并记录诊断。
+
+MNN 仍是默认方法；只有显式传入 `--mining_method ot` 才启用 O2。
+当前只完成了语法检查和 CPU 小规模数值测试，尚未在完整数据集与 GPU 训练流程上验证最终检索指标。
